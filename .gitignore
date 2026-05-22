@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Clarify Specific
+logs*.txt
+test*.py
+*.sqlite
+*.sqlite3
+.local/
