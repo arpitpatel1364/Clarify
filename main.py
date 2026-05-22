@@ -36,7 +36,7 @@ class ClarifyApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("Clarify")
-        self.app.setDesktopFileName("clarify.desktop")
+        self.app.setDesktopFileName("clarify")
         self.app.setQuitOnLastWindowClosed(False)
 
         # Font — Inter for crisp Linux rendering (falls back to system sans-serif)
@@ -115,13 +115,15 @@ class ClarifyApp:
         """Called from background thread — must dispatch to Qt thread."""
         if not settings.trigger.auto_on_select:
             return
-        if self._is_processing:
+        if self._is_processing or (hasattr(self, 'chat_panel') and self.chat_panel._is_streaming):
             return
         self._bridge.trigger_explain.emit(text, source_app)
 
     def _on_hotkey(self):
         """Called from background thread."""
         if not settings.trigger.hotkey_enabled:
+            return
+        if self._is_processing or (hasattr(self, 'chat_panel') and self.chat_panel._is_streaming):
             return
         # Read current primary selection
         from system_platform.linux import _get_primary_selection, get_active_window_name
@@ -168,24 +170,23 @@ class ClarifyApp:
         
         try:
             provider = settings.ai.active_provider
-            db = get_db()
-            from db.database import get_or_create_provider
-            cfg = get_or_create_provider(db, provider)
-            model = cfg.model or provider
+            with get_db() as db:
+                from db.database import get_or_create_provider
+                cfg = get_or_create_provider(db, provider)
+                model = cfg.model or provider
 
-            if settings.save_history and full:   # ← only save if full is non-empty
-                exp = save_explanation(
-                    db=db,
-                    session_id=self._session_id,
-                    selected_text=self._pending_text,
-                    explanation_text=full,
-                    provider=provider,
-                    model=model,
-                    source_app=source_app,
-                    tokens=tokens,
-                )
-                self._current_exp_id = exp.id
-            db.close()
+                if settings.save_history and full:   # ← only save if full is non-empty
+                    exp = save_explanation(
+                        db=db,
+                        session_id=self._session_id,
+                        selected_text=self._pending_text,
+                        explanation_text=full,
+                        provider=provider,
+                        model=model,
+                        source_app=source_app,
+                        tokens=tokens,
+                    )
+                    self._current_exp_id = exp.id
         except Exception as e:
             print(f"[Clarify] DB error in _on_done: {e}")
 
@@ -226,9 +227,8 @@ class ClarifyApp:
 
     def _on_bookmark(self, explanation_id: str):
         from db.database import toggle_bookmark
-        db = get_db()
-        toggle_bookmark(db, explanation_id)
-        db.close()
+        with get_db() as db:
+            toggle_bookmark(db, explanation_id)
 
     def _on_pause_toggled(self, paused: bool):
         if paused:

@@ -79,12 +79,11 @@ def build_explain_prompt(selected_text: str, style: str) -> str:
 
 
 def _get_provider_key_and_model(provider: str) -> tuple[str, str, str]:
-    db = get_db()
-    cfg = get_or_create_provider(db, provider)
-    key = decrypt(cfg.api_key or "")
-    model = cfg.model or ""
-    base_url = cfg.base_url or ""
-    db.close()
+    with get_db() as db:
+        cfg = get_or_create_provider(db, provider)
+        key = decrypt(cfg.api_key or "")
+        model = cfg.model or ""
+        base_url = cfg.base_url or ""
     return key, model, base_url
 
 
@@ -219,9 +218,16 @@ def _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done, s
         model_name=model or "gemini-1.5-flash",
         system_instruction=system_prompt,
     )
-    prompt = user_prompt
+    
+    contents = []
+    for m in (extra_messages or []):
+        role = "model" if m["role"] == "assistant" else "user"
+        contents.append({"role": role, "parts": [m["content"]]})
+    
+    contents.append({"role": "user", "parts": [user_prompt]})
+    
     full = ""
-    for chunk in gmodel.generate_content(prompt, stream=True):
+    for chunk in gmodel.generate_content(contents, stream=True):
         t = chunk.text or ""
         full += t
         if t:

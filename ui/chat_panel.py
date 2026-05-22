@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QLineEdit, QTextEdit, QSplitter,
     QSizePolicy, QApplication, QListWidget, QListWidgetItem,
-    QStackedWidget
+    QStackedWidget, QSizeGrip
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve,
@@ -319,7 +319,9 @@ class MessageBubble(QFrame):
         self._raw = content  # track raw text for streaming appends
 
     def _format(self, text: str) -> str:
+        import html
         import re
+        text = html.escape(text)
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
         text = re.sub(r'`(.+?)`',
@@ -362,6 +364,10 @@ class ChatPanel(QWidget):
         self._done_signal.connect(self._stream_done)
         self._error_signal.connect(self._stream_error)
 
+        self.size_grip = QSizeGrip(self)
+        self.size_grip.setFixedSize(16, 16)
+        self.size_grip.setStyleSheet("background: transparent;")
+
         self._setup_ui()
         self._load_history()
 
@@ -370,10 +376,14 @@ class ChatPanel(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setStyleSheet("QSplitter::handle { background: rgba(245, 247, 250, 0.05); width: 2px; }")
+
         # ── Sidebar ─────────────────────────────────────────────────────
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(268)
+        self.sidebar.setMinimumWidth(220)
+        self.sidebar.setMaximumWidth(400)
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(24, 24, 24, 24)
         sidebar_layout.setSpacing(12)
@@ -389,16 +399,26 @@ class ChatPanel(QWidget):
         sub_lbl.setObjectName("brand_sub")
         brand_col.addWidget(title_lbl)
         brand_col.addWidget(sub_lbl)
-        close_btn = QPushButton("×")
+        self.max_btn = QPushButton("▢")
+        self.max_btn.setObjectName("icon_btn")
+        self.max_btn.setFixedSize(28, 28)
+        self.max_btn.setStyleSheet(
+            "QPushButton{font-size:16px; font-weight:400; background:transparent; color:#A0A8C0; border:none; border-radius:6px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.1);color:#FFF;}"
+        )
+        self.max_btn.clicked.connect(self._toggle_maximize)
+
+        close_btn = QPushButton("✕")
         close_btn.setObjectName("icon_btn")
         close_btn.setFixedSize(28, 28)
         close_btn.setStyleSheet(
-            "QPushButton{font-size:16px; font-weight:300;}"
-            "QPushButton:hover{background:rgba(255,71,87,0.22);color:#FF4757;border-color:rgba(255,71,87,0.40);}"
+            "QPushButton{font-size:16px; font-weight:400; background:transparent; color:#A0A8C0; border:none; border-radius:6px;}"
+            "QPushButton:hover{background:rgba(255,71,87,0.22);color:#FF4757;}"
         )
         close_btn.clicked.connect(self.hide)
         brand_row.addLayout(brand_col)
         brand_row.addStretch()
+        brand_row.addWidget(self.max_btn)
         brand_row.addWidget(close_btn)
         sidebar_layout.addLayout(brand_row)
 
@@ -525,8 +545,12 @@ class ChatPanel(QWidget):
         send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         send_shortcut.activated.connect(self._on_send)
 
-        main_layout.addWidget(self.sidebar)
-        main_layout.addWidget(self.chat_area, 1)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(self.chat_area)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(self.splitter)
 
         # Window drag
         self._drag_pos = None
@@ -538,6 +562,10 @@ class ChatPanel(QWidget):
         self._current_selected_text = ""
         self._current_explanation = ""
         self._chat_history = []
+        self._is_streaming = False
+        self._streaming_bubble = None
+        self.send_btn.setEnabled(True)
+        self.chat_input.setEnabled(True)
         self._clear_messages()
         self.context_preview.hide()
         self.chat_title.setText("Select text anywhere to get started")
@@ -548,6 +576,9 @@ class ChatPanel(QWidget):
         self._current_selected_text = selected_text
         self._current_explanation = explanation
         self._chat_history = []
+        self._is_streaming = False
+        self.send_btn.setEnabled(True)
+        self.chat_input.setEnabled(True)
 
         self._clear_messages()
         self.context_preview.setText(f'"{textwrap.shorten(selected_text, 100, placeholder="…")}"')
@@ -556,6 +587,7 @@ class ChatPanel(QWidget):
 
         # Show initial explanation as assistant message
         bubble = self._add_bubble("assistant", explanation)
+        self._streaming_bubble = bubble  # Set in case it's still streaming
         self._scroll_to_bottom()
 
         if not self.isVisible():
@@ -584,9 +616,8 @@ class ChatPanel(QWidget):
 
     def _load_history(self, filter_mode="all", query=""):
         self.history_list.clear()
-        db = get_db()
-        exps = get_history(db, limit=200)
-        db.close()
+        with get_db() as db:
+            exps = get_history(db, limit=200)
 
         for exp in exps:
             if filter_mode == "bookmarked" and not exp.is_bookmarked:
@@ -611,24 +642,26 @@ class ChatPanel(QWidget):
         self._load_history(filter_mode=mode, query=self.search_box.text())
 
     def _load_explanation(self, exp_id: str):
-        db = get_db()
-        exp = db.query(Explanation).filter_by(id=exp_id).first()
-        if not exp:
-            db.close()
-            return
-        self._current_exp_id = exp_id
-        self._current_selected_text = exp.selected_text
-        self._current_explanation = exp.explanation
-        self._chat_history = []
-        self._clear_messages()
-        self.context_preview.setText(f'"{textwrap.shorten(exp.selected_text, 100, placeholder="…")}"')
-        self.context_preview.show()
-        self.chat_title.setText(textwrap.shorten(exp.selected_text, 40, placeholder="…"))
-        self._add_bubble("assistant", exp.explanation)
-        for msg in exp.messages:
-            self._chat_history.append({"role": msg.role, "content": msg.content})
-            self._add_bubble(msg.role, msg.content)
-        db.close()
+        with get_db() as db:
+            exp = db.query(Explanation).filter_by(id=exp_id).first()
+            if not exp:
+                return
+            self._current_exp_id = exp_id
+            self._current_selected_text = exp.selected_text
+            self._current_explanation = exp.explanation
+            self._chat_history = []
+            self._is_streaming = False
+            self._streaming_bubble = None
+            self.send_btn.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            self._clear_messages()
+            self.context_preview.setText(f'"{textwrap.shorten(exp.selected_text, 100, placeholder="…")}"')
+            self.context_preview.show()
+            self.chat_title.setText(textwrap.shorten(exp.selected_text, 40, placeholder="…"))
+            self._add_bubble("assistant", exp.explanation)
+            for msg in exp.messages:
+                self._chat_history.append({"role": msg.role, "content": msg.content})
+                self._add_bubble(msg.role, msg.content)
         self._scroll_to_bottom()
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -681,9 +714,9 @@ class ChatPanel(QWidget):
         # mode="chat" tells explain_text NOT to wrap text in style prompt
         explain_text(
             text=text,
-            on_token=lambda t: QTimer.singleShot(0, lambda tok=t: self._stream_token(tok)),
-            on_done=lambda full, tokens: QTimer.singleShot(0, lambda f=full, tk=tokens: self._stream_done(f, tk)),
-            on_error=lambda e: QTimer.singleShot(0, lambda err=e: self._stream_error(err)),
+            on_token=self._token_signal.emit,
+            on_done=self._done_signal.emit,
+            on_error=self._error_signal.emit,
             extra_messages=context_messages[:-1],  # context WITHOUT the current question
             original_text=self._current_selected_text,
             mode="chat",
@@ -692,9 +725,8 @@ class ChatPanel(QWidget):
         # Save user message to DB
         if self._current_exp_id:
             try:
-                db = get_db()
-                save_message(db, self._current_exp_id, "user", text)
-                db.close()
+                with get_db() as db:
+                    save_message(db, self._current_exp_id, "user", text)
             except Exception as e:
                 print(f"[Clarify] DB save error: {e}")
 
@@ -713,9 +745,11 @@ class ChatPanel(QWidget):
         self.chat_input.setEnabled(True)
         self._chat_history.append({"role": "assistant", "content": full})
         if self._current_exp_id:
-            db = get_db()
-            save_message(db, self._current_exp_id, "assistant", full)
-            db.close()
+            try:
+                with get_db() as db:
+                    save_message(db, self._current_exp_id, "assistant", full)
+            except Exception as e:
+                print(f"[Clarify] DB save error: {e}")
 
     def _stream_error(self, error: str):
         self._is_streaming = False
@@ -730,13 +764,16 @@ class ChatPanel(QWidget):
         bubble = MessageBubble(role, content)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        
+        chat_width = self.chat_area.width() if self.chat_area.width() > 100 else 600
+        
         if role == "user":
             row.addStretch()
             row.addWidget(bubble, 0, Qt.AlignmentFlag.AlignRight)
-            bubble.setMaximumWidth(380)
+            bubble.setMaximumWidth(int(chat_width * 0.75))
         else:
             row.addWidget(bubble, 0, Qt.AlignmentFlag.AlignLeft)
-            bubble.setMaximumWidth(520)
+            bubble.setMaximumWidth(int(chat_width * 0.85))
             row.addStretch()
         # Insert before the stretch at the end
         count = self.msg_layout.count()
@@ -770,31 +807,26 @@ class ChatPanel(QWidget):
         sb = self.msg_scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _on_bookmark(self):
-        if self._current_exp_id:
-            db = get_db()
-            result = toggle_bookmark(db, self._current_exp_id)
-            db.close()
-            self.bm_btn.setText("✓ Saved" if result else "Save")
-            QTimer.singleShot(1800, lambda: self.bm_btn.setText("Save"))
-            self._load_history()
+    # ── Resize & Drag ───────────────────────────────────────────────────────
 
-    def _on_copy(self):
-        try:
-            import pyperclip
-            pyperclip.copy(self._current_explanation)
-        except Exception:
-            QApplication.clipboard().setText(self._current_explanation)
-        self.copy_btn.setText("✓ Copied")
-        QTimer.singleShot(1800, lambda: self.copy_btn.setText("Copy"))
-
-    # ── Window ───────────────────────────────────────────────────────────────
-
-    def _center_on_screen(self):
-        screen = QApplication.primaryScreen().geometry()
-        w, h = 860, 580
-        self.resize(w, h)
-        self.move((screen.width() - w) // 2, (screen.height() - h) // 2)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.size_grip.move(self.width() - self.size_grip.width(), self.height() - self.size_grip.height())
+        
+        # Update max widths of bubbles
+        chat_width = self.chat_area.width()
+        if chat_width < 100:
+            return
+        for i in range(self.msg_layout.count()):
+            item = self.msg_layout.itemAt(i)
+            if item and item.layout():
+                for j in range(item.layout().count()):
+                    w = item.layout().itemAt(j).widget()
+                    if isinstance(w, MessageBubble):
+                        if "user" in w.objectName():
+                            w.setMaximumWidth(int(chat_width * 0.75))
+                        else:
+                            w.setMaximumWidth(int(chat_width * 0.85))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -802,10 +834,63 @@ class ChatPanel(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            if not self.isMaximized():
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.max_btn.setText("▢")
+            self.size_grip.show()
+        else:
+            self.showMaximized()
+            self.max_btn.setText("❐")
+            self.size_grip.hide()
+
+    def _on_bookmark(self):
+        if self._current_exp_id:
+            with get_db() as db:
+                result = toggle_bookmark(db, self._current_exp_id)
+            self.bm_btn.setText("✓ Saved" if result else "Save")
+            QTimer.singleShot(1800, lambda: self.bm_btn.setText("Save"))
+            self._load_history()
+
+    def _on_copy(self):
+        text_to_copy = ""
+        if self._current_selected_text:
+            text_to_copy += f"Selected Text:\n{self._current_selected_text}\n\n"
+        if self._current_explanation:
+            text_to_copy += f"Explanation:\n{self._current_explanation}\n\n"
+        
+        for msg in self._chat_history:
+            role = "You" if msg["role"] == "user" else "Clarify"
+            text_to_copy += f"{role}:\n{msg['content']}\n\n"
+            
+        if self._streaming_bubble and self._streaming_bubble._raw:
+            text_to_copy += f"Clarify (Streaming):\n{self._streaming_bubble._raw}\n\n"
+            
+        text_to_copy = text_to_copy.strip()
+        if not text_to_copy:
+            return
+            
+        try:
+            import pyperclip
+            pyperclip.copy(text_to_copy)
+        except Exception:
+            QApplication.clipboard().setText(text_to_copy)
+        self.copy_btn.setText("✓ Copied")
+        QTimer.singleShot(1800, lambda: self.copy_btn.setText("Copy"))
+
+    # ── Window ───────────────────────────────────────────────────────────────
+
+    def _center_on_screen(self):
+        screen = QApplication.primaryScreen().geometry()
+        w, h = 1024, 700
+        self.resize(w, h)
+        self.move((screen.width() - w) // 2, (screen.height() - h) // 2)
 
     def paintEvent(self, event):
         painter = QPainter(self)

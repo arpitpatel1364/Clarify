@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QLineEdit, QCheckBox, QComboBox, QSlider,
     QTabWidget, QScrollArea, QSizePolicy, QApplication,
-    QSpacerItem, QGridLayout
+    QSpacerItem, QGridLayout, QSizeGrip
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath
@@ -293,8 +293,13 @@ class SettingsWindow(QWidget):
             Qt.WindowType.Window |
             Qt.WindowType.FramelessWindowHint
         )
-        self.setMinimumSize(660, 520)
+        self.setMinimumSize(820, 600)
         self.setStyleSheet(SETTINGS_STYLE)
+        
+        self.size_grip = QSizeGrip(self)
+        self.size_grip.setFixedSize(16, 16)
+        self.size_grip.setStyleSheet("background: transparent;")
+        
         self._provider_widgets: dict = {}
         self._setup_ui()
         self._load_values()
@@ -322,16 +327,25 @@ class SettingsWindow(QWidget):
         title_lbl.setStyleSheet(
             "font-size:14px; font-weight:700; letter-spacing:3px; color:#F5F7FA; background:transparent;"
         )
-        close_btn = QPushButton("×")
+        self.max_btn = QPushButton("▢")
+        self.max_btn.setStyleSheet(
+            "QPushButton { background:transparent; color:#A0A8C0; border:none; "
+            "font-size:16px; font-weight:400; padding:2px 6px; border-radius:6px; }"
+            "QPushButton:hover { background:rgba(255,255,255,0.1); color:#FFF; }"
+        )
+        self.max_btn.clicked.connect(self._toggle_maximize)
+
+        close_btn = QPushButton("✕")
         close_btn.setStyleSheet(
             "QPushButton { background:transparent; color:#A0A8C0; border:none; "
-            "font-size:18px; font-weight:300; padding:2px 6px; border-radius:6px; }"
+            "font-size:16px; font-weight:400; padding:2px 6px; border-radius:6px; }"
             "QPushButton:hover { background:rgba(255,71,87,0.22); color:#FF4757; }"
         )
         close_btn.clicked.connect(self.hide)
         tb_layout.addWidget(dot_lbl)
         tb_layout.addWidget(title_lbl)
         tb_layout.addStretch()
+        tb_layout.addWidget(self.max_btn)
         tb_layout.addWidget(close_btn)
         layout.addWidget(title_bar)
 
@@ -509,12 +523,11 @@ class SettingsWindow(QWidget):
         layout.addWidget(self._divider())
         layout.addWidget(self._section("API KEYS & MODELS"))
 
-        db = get_db()
-        for pid, pname, default_model, default_url in PROVIDERS:
-            cfg = get_or_create_provider(db, pid)
-            card = self._build_provider_card(pid, pname, cfg, default_model, default_url)
-            layout.addWidget(card)
-        db.close()
+        with get_db() as db:
+            for pid, pname, default_model, default_url in PROVIDERS:
+                cfg = get_or_create_provider(db, pid)
+                card = self._build_provider_card(pid, pname, cfg, default_model, default_url)
+                layout.addWidget(card)
 
         layout.addStretch()
         return self._scrollable(container)
@@ -688,17 +701,19 @@ class SettingsWindow(QWidget):
         s.save()
 
         # Save provider keys
-        db = get_db()
-        for pid, widgets in self._provider_widgets.items():
-            key_input, model_input, url_input = widgets
-            cfg = get_or_create_provider(db, pid)
-            raw_key = key_input.text().strip()
-            cfg.api_key = encrypt(raw_key) if raw_key else ""
-            cfg.model = model_input.text().strip()
-            if url_input:
-                cfg.base_url = url_input.text().strip()
-            db.commit()
-        db.close()
+        with get_db() as db:
+            for pid, widgets in self._provider_widgets.items():
+                key_input, model_input, url_input = widgets
+                cfg = get_or_create_provider(db, pid)
+                raw_key = key_input.text().strip()
+                if raw_key:
+                    cfg.api_key = encrypt(raw_key) if s.encrypt_keys else raw_key
+                else:
+                    cfg.api_key = ""
+                cfg.model = model_input.text().strip()
+                if url_input:
+                    cfg.base_url = url_input.text().strip()
+                db.commit()
 
         if s.autostart:
             self._setup_autostart()
@@ -729,29 +744,38 @@ class SettingsWindow(QWidget):
                         kwargs["base_url"] = urls[provider]
                     c = OpenAI(**kwargs)
                     c.models.list()
-                QTimer.singleShot(0, lambda: self.status_lbl.setText(f"✓ {provider} key works!"))
+                elif provider == "gemini":
+                    import google.generativeai as genai
+                    genai.configure(api_key=key)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    model.generate_content("test", generation_config={"max_output_tokens": 1})
+                elif provider == "ollama":
+                    import requests
+                    r = requests.get("http://localhost:11434/api/tags", timeout=3)
+                    r.raise_for_status()
+                QTimer.singleShot(0, lambda: self.status_lbl.setText(f"✓ {provider} connection works!"))
             except Exception as e:
                 QTimer.singleShot(0, lambda err=str(e): self.status_lbl.setText(f"✗ {err[:60]}"))
             QTimer.singleShot(3000, lambda: self.status_lbl.setText(""))
         threading.Thread(target=_test, daemon=True).start()
 
     def _clear_history(self):
-        from db.database import SessionLocal, Explanation, Message
-        db = get_db()
-        db.query(Message).delete()
-        db.query(Explanation).delete()
-        db.commit()
-        db.close()
+        from db.database import Explanation, Message
+        with get_db() as db:
+            db.query(Message).delete()
+            db.query(Explanation).delete()
+            db.commit()
         self.status_lbl.setText("✓ History cleared")
         QTimer.singleShot(2000, lambda: self.status_lbl.setText(""))
 
     def _setup_autostart(self):
+        import sys
         from pathlib import Path
         main_py = str(Path(__file__).resolve().parent.parent / "main.py")
         desktop_entry = f"""[Desktop Entry]
 Type=Application
 Name=Clarify
-Exec=python3 {main_py}
+Exec={sys.executable} {main_py}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
@@ -761,7 +785,23 @@ X-GNOME-Autostart-enabled=true
         with open(os.path.join(autostart_dir, "clarify.desktop"), "w") as f:
             f.write(desktop_entry)
 
-    # ── Drag ────────────────────────────────────────────────────────────────
+    # ── Resize & Drag ───────────────────────────────────────────────────────
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not hasattr(self, "_first_shown"):
+            self._first_shown = True
+            self._center_on_screen()
+
+    def _center_on_screen(self):
+        screen = QApplication.primaryScreen().geometry()
+        w, h = 820, 600
+        self.resize(w, h)
+        self.move((screen.width() - w) // 2, (screen.height() - h) // 2)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.size_grip.move(self.width() - self.size_grip.width(), self.height() - self.size_grip.height())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -769,10 +809,21 @@ X-GNOME-Autostart-enabled=true
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            if not self.isMaximized():
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.max_btn.setText("▢")
+            self.size_grip.show()
+        else:
+            self.showMaximized()
+            self.max_btn.setText("❐")
+            self.size_grip.hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)

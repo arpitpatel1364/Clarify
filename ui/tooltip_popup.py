@@ -377,8 +377,11 @@ class GlassPopup(QWidget):
     # ── Private helpers ──────────────────────────────────────────────────────
 
     def _markdown_to_html(self, text: str) -> str:
-        """Basic markdown → HTML for display."""
+        """Basic markdown → HTML for display, escaping raw HTML to prevent injection and layout breakage."""
+        import html
         import re
+        # Escape any raw HTML/XML tags in selection or response (e.g. <int>)
+        text = html.escape(text)
         # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
         # Italic
@@ -392,7 +395,12 @@ class GlassPopup(QWidget):
         return f'<span style="color:#F5F7FA;font-size:14px;">{text}</span>'
 
     def _position_near_cursor(self, cursor_pos: QPoint):
-        screen = QApplication.primaryScreen().geometry()
+        # Support multi-display context by obtaining the screen where the cursor resides
+        screen = QApplication.screenAt(cursor_pos)
+        if not screen:
+            screen = QApplication.primaryScreen()
+        screen_geo = screen.geometry()
+
         self.adjustSize()
         w = self.width() or 440
         h = self.height() or 300
@@ -400,13 +408,13 @@ class GlassPopup(QWidget):
         x = cursor_pos.x() + 20
         y = cursor_pos.y() + 20
 
-        if x + w > screen.right() - 20:
+        if x + w > screen_geo.right() - 20:
             x = cursor_pos.x() - w - 10
-        if y + h > screen.bottom() - 40:
+        if y + h > screen_geo.bottom() - 40:
             y = cursor_pos.y() - h - 10
 
-        x = max(20, min(x, screen.right() - w - 20))
-        y = max(20, min(y, screen.bottom() - h - 40))
+        x = max(screen_geo.left() + 20, min(x, screen_geo.right() - w - 20))
+        y = max(screen_geo.top() + 20, min(y, screen_geo.bottom() - h - 40))
         self.move(x, y)
 
     def _show_animated(self):
@@ -454,7 +462,9 @@ class GlassPopup(QWidget):
 
     def _scroll_to_bottom(self):
         sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        # Only auto-scroll if user is close to the bottom (within a 30px threshold)
+        if sb.maximum() - sb.value() < 30:
+            sb.setValue(sb.maximum())
 
     def _on_chat(self):
         self.open_chat_requested.emit(

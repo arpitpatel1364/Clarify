@@ -1,9 +1,7 @@
 """
-Clarify — Key encryption using Fernet + machine-derived key
+Clarify — Key encryption using Fernet + random secure key
 """
 import os
-import base64
-import hashlib
 from pathlib import Path
 from cryptography.fernet import Fernet
 from config.settings import KEY_FILE
@@ -11,19 +9,21 @@ from config.settings import KEY_FILE
 
 def _get_or_create_key() -> bytes:
     if KEY_FILE.exists():
+        # Ensure permissions are secure even if created previously
+        try:
+            if (KEY_FILE.stat().st_mode & 0o777) != 0o600:
+                KEY_FILE.chmod(0o600)
+        except Exception:
+            pass
         return KEY_FILE.read_bytes()
-    # Derive from machine-id + fallback
-    machine_id = ""
-    for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"]:
-        if os.path.exists(path):
-            machine_id = open(path).read().strip()
-            break
-    if not machine_id:
-        machine_id = str(os.getuid()) + os.uname().nodename
-    raw = hashlib.sha256(machine_id.encode()).digest()
-    key = base64.urlsafe_b64encode(raw)
-    KEY_FILE.write_bytes(key)
-    KEY_FILE.chmod(0o600)
+    
+    # Generate a cryptographically secure random key
+    key = Fernet.generate_key()
+    
+    # Create file with 0o600 permissions immediately to avoid race conditions
+    fd = os.open(str(KEY_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
     return key
 
 

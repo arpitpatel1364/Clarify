@@ -75,13 +75,28 @@ class ProviderConfig(Base):
 
 # ── Engine & Session ──────────────────────────────────────────────────────────
 
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    connect_args={"check_same_thread": False, "timeout": 30},
+    echo=False
+)
+
+from sqlalchemy import event
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")  # Enable WAL mode for concurrent operations
+    cursor.close()
+
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def get_db() -> Session:
     return SessionLocal()
+
 
 
 def get_or_create_provider(db: Session, provider: str) -> ProviderConfig:
