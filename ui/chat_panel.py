@@ -357,16 +357,12 @@ class ChatPanel(QWidget):
             Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setMinimumSize(800, 550)
+        self.setFixedSize(1024, 700)
         self.setStyleSheet(PANEL_STYLE)
 
         self._token_signal.connect(self._stream_token)
         self._done_signal.connect(self._stream_done)
         self._error_signal.connect(self._stream_error)
-
-        self.size_grip = QSizeGrip(self)
-        self.size_grip.setFixedSize(16, 16)
-        self.size_grip.setStyleSheet("background: transparent;")
 
         self._setup_ui()
         self._load_history()
@@ -399,14 +395,6 @@ class ChatPanel(QWidget):
         sub_lbl.setObjectName("brand_sub")
         brand_col.addWidget(title_lbl)
         brand_col.addWidget(sub_lbl)
-        self.max_btn = QPushButton("▢")
-        self.max_btn.setObjectName("icon_btn")
-        self.max_btn.setFixedSize(28, 28)
-        self.max_btn.setStyleSheet(
-            "QPushButton{font-size:16px; font-weight:400; background:transparent; color:#A0A8C0; border:none; border-radius:6px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.1);color:#FFF;}"
-        )
-        self.max_btn.clicked.connect(self._toggle_maximize)
 
         close_btn = QPushButton("✕")
         close_btn.setObjectName("icon_btn")
@@ -418,7 +406,6 @@ class ChatPanel(QWidget):
         close_btn.clicked.connect(self.hide)
         brand_row.addLayout(brand_col)
         brand_row.addStretch()
-        brand_row.addWidget(self.max_btn)
         brand_row.addWidget(close_btn)
         sidebar_layout.addLayout(brand_row)
 
@@ -811,7 +798,6 @@ class ChatPanel(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.size_grip.move(self.width() - self.size_grip.width(), self.height() - self.size_grip.height())
         
         # Update max widths of bubbles
         chat_width = self.chat_area.width()
@@ -840,15 +826,7 @@ class ChatPanel(QWidget):
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
 
-    def _toggle_maximize(self):
-        if self.isMaximized():
-            self.showNormal()
-            self.max_btn.setText("▢")
-            self.size_grip.show()
-        else:
-            self.showMaximized()
-            self.max_btn.setText("❐")
-            self.size_grip.hide()
+
 
     def _on_bookmark(self):
         if self._current_exp_id:

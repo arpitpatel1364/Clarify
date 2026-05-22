@@ -293,12 +293,8 @@ class SettingsWindow(QWidget):
             Qt.WindowType.Window |
             Qt.WindowType.FramelessWindowHint
         )
-        self.setMinimumSize(820, 600)
+        self.setFixedSize(820, 600)
         self.setStyleSheet(SETTINGS_STYLE)
-        
-        self.size_grip = QSizeGrip(self)
-        self.size_grip.setFixedSize(16, 16)
-        self.size_grip.setStyleSheet("background: transparent;")
         
         self._provider_widgets: dict = {}
         self._setup_ui()
@@ -327,13 +323,6 @@ class SettingsWindow(QWidget):
         title_lbl.setStyleSheet(
             "font-size:14px; font-weight:700; letter-spacing:3px; color:#F5F7FA; background:transparent;"
         )
-        self.max_btn = QPushButton("▢")
-        self.max_btn.setStyleSheet(
-            "QPushButton { background:transparent; color:#A0A8C0; border:none; "
-            "font-size:16px; font-weight:400; padding:2px 6px; border-radius:6px; }"
-            "QPushButton:hover { background:rgba(255,255,255,0.1); color:#FFF; }"
-        )
-        self.max_btn.clicked.connect(self._toggle_maximize)
 
         close_btn = QPushButton("✕")
         close_btn.setStyleSheet(
@@ -345,7 +334,6 @@ class SettingsWindow(QWidget):
         tb_layout.addWidget(dot_lbl)
         tb_layout.addWidget(title_lbl)
         tb_layout.addStretch()
-        tb_layout.addWidget(self.max_btn)
         tb_layout.addWidget(close_btn)
         layout.addWidget(title_bar)
 
@@ -361,8 +349,9 @@ class SettingsWindow(QWidget):
 
         # Bottom bar
         bottom = QFrame()
+        bottom.setObjectName("settings_bottom_bar")
         bottom.setStyleSheet(
-            "background: #0A0E27; border-top: 1px solid rgba(108,92,231,0.15);"
+            "QFrame#settings_bottom_bar { background: #0A0E27; border-top: 1px solid rgba(108,92,231,0.15); }"
         )
         bottom.setFixedHeight(62)
         bl = QHBoxLayout(bottom)
@@ -801,7 +790,6 @@ X-GNOME-Autostart-enabled=true
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.size_grip.move(self.width() - self.size_grip.width(), self.height() - self.size_grip.height())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -809,21 +797,10 @@ X-GNOME-Autostart-enabled=true
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton:
-            if not self.isMaximized():
-                self.move(event.globalPosition().toPoint() - self._drag_pos)
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
-
-    def _toggle_maximize(self):
-        if self.isMaximized():
-            self.showNormal()
-            self.max_btn.setText("▢")
-            self.size_grip.show()
-        else:
-            self.showMaximized()
-            self.max_btn.setText("❐")
-            self.size_grip.hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)

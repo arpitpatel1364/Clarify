@@ -4,6 +4,18 @@
 
 ---
 
+## Core Use Case (How it works)
+
+Imagine you are reading a technical blog post, a block of code, a command-line tutorial, or a dense document:
+1. **Highlight the text** you do not understand (e.g., a complex line of code or terminal command).
+2. **Wait ~700ms** (or press the global hotkey **Ctrl+Shift+E**).
+3. **An explanation tooltip** instantly pops up right next to your mouse cursor.
+4. Need to dive deeper? Click **Continue** to open the chat panel and talk directly with the AI about that highlighted context.
+
+No more copy-pasting, switching to a web browser, opening AI websites, and manually writing "explain this".
+
+---
+
 ## Features
 
 - **Global text selection monitor** — watches X11 PRIMARY selection
@@ -70,6 +82,48 @@ Highlight text → press **Ctrl+Shift+E** → popup appears
 - Right: conversation thread with AI
 - Type follow-up questions, press **Ctrl+Enter** to send
 - Filter by bookmarked explanations
+
+---
+
+## Visual Tour & Interface Analyses
+
+### 1. System Integration
+
+* **Application Launcher:** Launch Clarify directly from the Ubuntu apps grid.
+  ![App Launcher Icon](assets/app_launcher_icon.png)
+
+* **System Dock:** View the active running indicator on the Ubuntu system dock.
+  ![Dock Active Icon](assets/dock_active_icon.png)
+
+* **System Tray Icon:** Clarify runs quietly in the background, represented by the magnifying glass icon in the top-bar system tray.
+  ![System Tray Icon](assets/system_tray_icon.png)
+
+* **System Tray Menu:** Right-click the tray icon to quickly pause selection monitoring, open the chat panel, configure settings, or exit the app.
+  ![System Tray Menu](assets/system_tray_menu.png)
+
+### 2. Core Workflow & Dialogs
+
+* **Interactive Floating Tooltip:** Highlighting any text prompts a glassmorphic tooltip near your cursor with a live AI explanation, offering Continue (Chat), Copy, and Bookmark (Save) options.
+  ![Tooltip Explanation Popup](assets/tooltip_explanation_popup.png)
+
+* **Detailed Explanation View:** Read explanations in a high-resolution, scrollable chat bubble layout.
+  ![Chat Explanation Detail](assets/chat_explanation_detail.png)
+
+### 3. Chat Panel & History
+
+* **Main Chat Workspace:** A dedicated workspace to ask follow-up questions, start new conversation sessions, and view explanation histories.
+  ![Chat Panel Workspace](assets/chat_panel_empty_state.png)
+
+* **Bookmarked Filter:** Toggle history list items to display only saved/bookmarked explanations.
+  ![Saved History Filter](assets/chat_panel_filtered_saved.png)
+
+### 4. Configuration Controls
+
+* **AI Providers Settings:** Toggle active AI providers (Claude, OpenAI, Gemini, Groq, Ollama, OpenRouter), adjust temperature parameters, select explanation styles, or update credentials.
+  ![AI Providers Tab](assets/settings_ai_providers.png)
+
+* **Trigger Settings:** Configure automatic text-selection triggers (with custom delays and lengths) or choose global X11 keybindings.
+  ![Triggers Settings Tab](assets/settings_triggers.png)
 
 ---
 
