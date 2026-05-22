@@ -12,22 +12,70 @@ from core.crypto import decrypt
 from config.settings import settings
 
 
-EXPLAIN_SYSTEM = """You are Clarify, an intelligent explainer assistant.
-When given selected text, explain it clearly and concisely.
-- Adapt your explanation style based on the content (technical, legal, medical, code, etc.)
-- Use simple language unless the user asks for technical depth
-- Keep explanations focused and useful
-- Format with markdown where helpful (bold key terms, bullet points for lists)
-- Be conversational, not robotic
-"""
-
 STYLE_PROMPTS = {
-    "simple":    "Explain this in simple, everyday language anyone can understand:",
-    "detailed":  "Give a thorough, detailed explanation of this:",
-    "eli5":      "Explain this like I'm 5 years old:",
-    "technical": "Give a precise technical explanation of this:",
-    "summary":   "Summarize this briefly in 2-3 sentences:",
+    "simple":    "Explain the following in simple, everyday language anyone can understand.",
+    "detailed":  "Give a thorough, detailed explanation of the following.",
+    "eli5":      "Explain the following like I am 5 years old. Use an analogy if helpful.",
+    "technical": "Give a precise technical explanation of the following. Assume expert audience.",
+    "summary":   "Summarize the following in 2-3 sentences. Be extremely concise.",
 }
+
+def detect_content_type(text: str) -> str:
+    text_lower = text.lower().strip()
+    code_signals = [
+        "def ", "function ", "class ", "import ", "const ", "let ", "var ",
+        "=>", "->", "::", "{}","();", "return ", "if (", "for (", "#include",
+        "SELECT ", "FROM ", "WHERE ", "public static",
+    ]
+    if any(sig in text for sig in code_signals):
+        return "code"
+    legal_signals = [
+        "whereas", "hereinafter", "pursuant to", "notwithstanding",
+        "indemnify", "liability", "arbitration", "jurisdiction",
+        "plaintiff", "defendant", "aforementioned", "shall not",
+    ]
+    if any(sig in text_lower for sig in legal_signals):
+        return "legal"
+    medical_signals = [
+        "diagnosis", "symptoms", "treatment", "dosage", "mg", "ml",
+        "syndrome", "prognosis", "contraindicated", "pathology",
+        "administered", "prescription", "adverse", "clinical",
+    ]
+    if any(sig in text_lower for sig in medical_signals):
+        return "medical"
+    science_signals = [
+        "hypothesis", "methodology", "correlation", "coefficient",
+        "et al", "doi:", "p-value", "statistical", "theorem",
+        "equation", "formula", "wavelength", "frequency",
+    ]
+    if any(sig in text_lower for sig in science_signals):
+        return "scientific"
+    return "general"
+
+CONTENT_TYPE_HINTS = {
+    "code":       "The selected text is CODE. Explain what it does, its inputs/outputs, and any notable patterns or issues.",
+    "legal":      "The selected text is LEGAL language. Translate to plain English. Highlight key obligations, rights, and risks.",
+    "medical":    "The selected text is MEDICAL content. Explain in simple terms. Note if professional consultation is needed.",
+    "scientific": "The selected text is SCIENTIFIC/ACADEMIC. Explain the core concept clearly, then add depth.",
+    "general":    "",
+}
+
+def build_system_prompt(content_type: str) -> str:
+    base = """You are TextLens, an intelligent explainer assistant embedded in the user's desktop.
+Explain selected text clearly and concisely.
+Use markdown: **bold** key terms, bullet points for lists, `code` for code.
+Do not repeat the selected text. Do not start with "This text..."."""
+    hint = CONTENT_TYPE_HINTS.get(content_type, "")
+    if hint:
+        return f"{base}\n\n{hint}"
+    return base
+
+def build_explain_prompt(selected_text: str, style: str) -> str:
+    style_line = STYLE_PROMPTS.get(style, STYLE_PROMPTS["simple"])
+    return (
+        f"{style_line}\n\n"
+        f'Selected text:\n"""\n{selected_text}\n"""'
+    )
 
 
 def _get_provider_key_and_model(provider: str) -> tuple[str, str, str]:
@@ -46,22 +94,30 @@ def explain_text(
     on_done: Callable[[str, int], None],
     on_error: Callable[[str], None],
     extra_messages: list | None = None,
+    original_text: str = "",
 ):
     """Non-blocking: runs in a thread, calls callbacks."""
     provider = settings.ai.active_provider
     style = settings.ai.explain_style
-    style_prompt = STYLE_PROMPTS.get(style, STYLE_PROMPTS["simple"])
-    user_prompt = f"{style_prompt}\n\n{text}"
+    
+    text_for_detection = original_text if original_text else text
+    content_type = detect_content_type(text_for_detection)
+    system_prompt = build_system_prompt(content_type)
+    
+    if extra_messages:
+        user_prompt = text
+    else:
+        user_prompt = build_explain_prompt(text, style)
 
     thread = threading.Thread(
         target=_run_explanation,
-        args=(provider, user_prompt, extra_messages or [], on_token, on_done, on_error),
+        args=(provider, user_prompt, extra_messages or [], on_token, on_done, on_error, system_prompt),
         daemon=True,
     )
     thread.start()
 
 
-def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, on_error):
+def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, on_error, system_prompt):
     try:
         key, model, base_url = _get_provider_key_and_model(provider)
         if not key and provider not in ("ollama",):
@@ -69,18 +125,18 @@ def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, o
             return
 
         if provider == "claude":
-            _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done)
+            _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt)
         elif provider == "openai":
-            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, base_url)
+            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url)
         elif provider == "gemini":
-            _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done)
+            _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt)
         elif provider == "groq":
-            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done,
+            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt,
                            base_url="https://api.groq.com/openai/v1")
         elif provider == "ollama":
-            _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, base_url)
+            _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url)
         elif provider == "openrouter":
-            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done,
+            _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt,
                            base_url="https://openrouter.ai/api/v1")
         else:
             on_error(f"Unknown provider: {provider}")
@@ -97,7 +153,7 @@ def _build_messages(user_prompt, extra_messages):
 
 
 # ── Claude ────────────────────────────────────────────────────────────────────
-def _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done):
+def _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt):
     import anthropic
     client = anthropic.Anthropic(api_key=key)
     full = ""
@@ -106,7 +162,7 @@ def _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done):
     with client.messages.stream(
         model=model or "claude-sonnet-4-20250514",
         max_tokens=settings.ai.max_tokens,
-        system=EXPLAIN_SYSTEM,
+        system=system_prompt,
         messages=messages,
     ) as stream:
         for text in stream.text_stream:
@@ -118,13 +174,13 @@ def _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done):
 
 
 # ── OpenAI-compatible (OpenAI, Groq, OpenRouter) ─────────────────────────────
-def _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, base_url=""):
+def _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url=""):
     from openai import OpenAI
     kwargs = {"api_key": key}
     if base_url:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
-    messages = [{"role": "system", "content": EXPLAIN_SYSTEM}]
+    messages = [{"role": "system", "content": system_prompt}]
     messages += _build_messages(user_prompt, extra_messages)
     full = ""
     tokens = 0
@@ -147,12 +203,12 @@ def _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, b
 
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
-def _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done):
+def _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt):
     import google.generativeai as genai
     genai.configure(api_key=key)
     gmodel = genai.GenerativeModel(
         model_name=model or "gemini-1.5-flash",
-        system_instruction=EXPLAIN_SYSTEM,
+        system_instruction=system_prompt,
     )
     prompt = user_prompt
     full = ""
@@ -165,10 +221,10 @@ def _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done):
 
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
-def _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, base_url):
+def _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url=""):
     import requests, json
     url = (base_url or "http://localhost:11434") + "/api/chat"
-    messages = [{"role": "system", "content": EXPLAIN_SYSTEM}]
+    messages = [{"role": "system", "content": system_prompt}]
     messages += _build_messages(user_prompt, extra_messages)
     resp = requests.post(url, json={"model": model or "llama3.2:3b", "messages": messages, "stream": True}, stream=True)
     full = ""

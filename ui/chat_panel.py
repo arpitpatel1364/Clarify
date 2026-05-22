@@ -642,7 +642,10 @@ class ChatPanel(QWidget):
 
         # Build context messages
         context = [
-            {"role": "assistant", "content": f"Here is the original explanation: {self._current_explanation}"}
+            {"role": "assistant", "content": (
+                f'I explained the following selected text:\n"""\n{self._current_selected_text}\n"""\n\n'
+                f"My explanation was:\n{self._current_explanation}"
+            )}
         ] + self._chat_history
 
         self._chat_history.append({"role": "user", "content": text})
@@ -663,6 +666,7 @@ class ChatPanel(QWidget):
             on_done=self._done_signal.emit,
             on_error=self._error_signal.emit,
             extra_messages=context,
+            original_text=self._current_selected_text,
         )
 
         if self._current_exp_id:

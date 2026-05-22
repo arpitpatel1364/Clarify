@@ -169,7 +169,7 @@ QSlider::sub-page:horizontal {
     border-radius: 3px;
 }
 QPushButton#save_btn {
-    background: #00D4FF;
+    background: #00D084;
     color: #060814;
     border: none;
     border-radius: 10px;
@@ -178,8 +178,8 @@ QPushButton#save_btn {
     padding: 10px 28px;
     letter-spacing: 0.3px;
 }
-QPushButton#save_btn:hover { background: #33DDFF; }
-QPushButton#save_btn:pressed { background: #00B5D9; }
+QPushButton#save_btn:hover { background: #33E8A6; }
+QPushButton#save_btn:pressed { background: #00B272; }
 QPushButton#save_btn:focus {
     border: 2px solid #F5F7FA;
     outline: none;
