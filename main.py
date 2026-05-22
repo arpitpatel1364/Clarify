@@ -164,27 +164,30 @@ class ClarifyApp:
             self.popup.append_token(token)
 
     def _on_done(self, full: str, tokens: int, source_app: str):
-        self._is_processing = False
-        provider = settings.ai.active_provider
+        self._is_processing = False   # ← always reset, even if save fails
+        
+        try:
+            provider = settings.ai.active_provider
+            db = get_db()
+            from db.database import get_or_create_provider
+            cfg = get_or_create_provider(db, provider)
+            model = cfg.model or provider
 
-        db = get_db()
-        from db.database import get_or_create_provider
-        cfg = get_or_create_provider(db, provider)
-        model = cfg.model or provider
-
-        if settings.save_history:
-            exp = save_explanation(
-                db=db,
-                session_id=self._session_id,
-                selected_text=self._pending_text,
-                explanation_text=full,
-                provider=provider,
-                model=model,
-                source_app=source_app,
-                tokens=tokens,
-            )
-            self._current_exp_id = exp.id
-        db.close()
+            if settings.save_history and full:   # ← only save if full is non-empty
+                exp = save_explanation(
+                    db=db,
+                    session_id=self._session_id,
+                    selected_text=self._pending_text,
+                    explanation_text=full,
+                    provider=provider,
+                    model=model,
+                    source_app=source_app,
+                    tokens=tokens,
+                )
+                self._current_exp_id = exp.id
+            db.close()
+        except Exception as e:
+            print(f"[Clarify] DB error in _on_done: {e}")
 
         if settings.popup.show_tooltip and self.popup.isVisible():
             self.popup.finish_explanation(self._current_exp_id or "", provider)
@@ -194,7 +197,7 @@ class ClarifyApp:
             self.chat_panel.refresh_history()
 
     def _on_error(self, error: str):
-        self._is_processing = False
+        self._is_processing = False   # ← always reset on error too
         print(f"[Clarify] AI error: {error}")
         if settings.popup.show_tooltip and self.popup.isVisible():
             self.popup.show_error(error)

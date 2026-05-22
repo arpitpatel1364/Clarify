@@ -637,42 +637,66 @@ class ChatPanel(QWidget):
         text = self.chat_input.toPlainText().strip()
         if not text or self._is_streaming:
             return
+
         self.chat_input.clear()
         self._add_bubble("user", text)
 
-        # Build context messages
-        context = [
-            {"role": "assistant", "content": (
-                f'I explained the following selected text:\n"""\n{self._current_selected_text}\n"""\n\n'
-                f"My explanation was:\n{self._current_explanation}"
-            )}
-        ] + self._chat_history
+        # Build context: original explanation context + all prior turns + current question
+        context_messages = []
 
+        # Inject original selected text + explanation as context
+        if self._current_selected_text or self._current_explanation:
+            context_messages.append({
+                "role": "user",
+                "content": (
+                    f"Please explain this text:\n"
+                    f'"""\n{self._current_selected_text}\n"""'
+                )
+            })
+            context_messages.append({
+                "role": "assistant",
+                "content": self._current_explanation
+            })
+
+        # Add all prior chat turns
+        context_messages.extend(self._chat_history)
+
+        # Add the current user question
+        context_messages.append({"role": "user", "content": text})
+
+        # Now append to local history AFTER building context
         self._chat_history.append({"role": "user", "content": text})
 
-        # Create typing indicator bubble
-        bubble = self._add_bubble("assistant", "Typing...")
+        # Create empty streaming bubble
+        bubble = self._add_bubble("assistant", "")
         bubble._raw = ""
-        bubble.lbl.setStyleSheet("color: #A0A8C0; font-style: italic;")
         self._streaming_bubble = bubble
         self._is_streaming = True
         self.send_btn.setEnabled(False)
         self.chat_input.setEnabled(False)
 
         from core.ai_router import explain_text
+
+        # Pass current user question as text, full context as extra_messages
+        # mode="chat" tells explain_text NOT to wrap text in style prompt
         explain_text(
             text=text,
-            on_token=self._token_signal.emit,
-            on_done=self._done_signal.emit,
-            on_error=self._error_signal.emit,
-            extra_messages=context,
+            on_token=lambda t: QTimer.singleShot(0, lambda tok=t: self._stream_token(tok)),
+            on_done=lambda full, tokens: QTimer.singleShot(0, lambda f=full, tk=tokens: self._stream_done(f, tk)),
+            on_error=lambda e: QTimer.singleShot(0, lambda err=e: self._stream_error(err)),
+            extra_messages=context_messages[:-1],  # context WITHOUT the current question
             original_text=self._current_selected_text,
+            mode="chat",
         )
 
+        # Save user message to DB
         if self._current_exp_id:
-            db = get_db()
-            save_message(db, self._current_exp_id, "user", text)
-            db.close()
+            try:
+                db = get_db()
+                save_message(db, self._current_exp_id, "user", text)
+                db.close()
+            except Exception as e:
+                print(f"[Clarify] DB save error: {e}")
 
     def _stream_token(self, token: str):
         if self._streaming_bubble:

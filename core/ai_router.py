@@ -95,34 +95,43 @@ def explain_text(
     on_error: Callable[[str], None],
     extra_messages: list | None = None,
     original_text: str = "",
+    mode: str = "explain",
 ):
     """Non-blocking: runs in a thread, calls callbacks."""
     provider = settings.ai.active_provider
-    style = settings.ai.explain_style
     
     text_for_detection = original_text if original_text else text
     content_type = detect_content_type(text_for_detection)
     system_prompt = build_system_prompt(content_type)
     
-    if extra_messages:
-        user_prompt = text
-    else:
+    if mode == "explain":
+        style = settings.ai.explain_style
         user_prompt = build_explain_prompt(text, style)
+        messages_to_send = extra_messages or []
+    elif mode == "chat":
+        user_prompt = text
+        messages_to_send = extra_messages or []
+    else:
+        on_error(f"Unknown explain_text mode: {mode}")
+        return
 
     thread = threading.Thread(
         target=_run_explanation,
-        args=(provider, user_prompt, extra_messages or [], on_token, on_done, on_error, system_prompt),
+        args=(provider, user_prompt, messages_to_send, on_token, on_done, on_error, system_prompt, mode),
         daemon=True,
     )
     thread.start()
 
 
-def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, on_error, system_prompt):
+def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, on_error, system_prompt, mode="explain"):
     try:
         key, model, base_url = _get_provider_key_and_model(provider)
         if not key and provider not in ("ollama",):
             on_error(f"No API key set for {provider}. Please add it in Settings → AI Providers.")
             return
+
+        if mode == "chat":
+            pass
 
         if provider == "claude":
             _stream_claude(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt)
@@ -134,14 +143,14 @@ def _run_explanation(provider, user_prompt, extra_messages, on_token, on_done, o
             _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt,
                            base_url="https://api.groq.com/openai/v1")
         elif provider == "ollama":
-            _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url)
+            _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, on_error, system_prompt, base_url)
         elif provider == "openrouter":
             _stream_openai(key, model, user_prompt, extra_messages, on_token, on_done, system_prompt,
                            base_url="https://openrouter.ai/api/v1")
         else:
             on_error(f"Unknown provider: {provider}")
     except Exception as e:
-        on_error(str(e))
+        on_error(f"Unexpected error in {provider}: {str(e)}")
 
 
 def _build_messages(user_prompt, extra_messages):
@@ -221,20 +230,120 @@ def _stream_gemini(key, model, user_prompt, extra_messages, on_token, on_done, s
 
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
-def _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, system_prompt, base_url=""):
-    import requests, json
-    url = (base_url or "http://localhost:11434") + "/api/chat"
+def _stream_ollama(model, user_prompt, extra_messages, on_token, on_done, on_error, system_prompt, base_url=""):
+    import requests
+    import json
+
+    # Fix trailing slash in base_url
+    base = (base_url or "http://localhost:11434").rstrip("/")
+    url = base + "/api/chat"
+
+    # Step 1: Check Ollama is running
+    try:
+        ping = requests.get(base + "/api/tags", timeout=3)
+        ping.raise_for_status()
+    except requests.exceptions.ConnectionError:
+        on_error(
+            "Ollama is not running.\n"
+            "Start it with: ollama serve\n"
+            "Then try again."
+        )
+        return
+    except requests.exceptions.Timeout:
+        on_error("Ollama connection timed out. Is it running on " + base + "?")
+        return
+    except Exception as e:
+        on_error(f"Cannot reach Ollama at {base}: {e}")
+        return
+
+    # Step 2: Validate model exists
+    model_name = model.strip() if model and model.strip() else "llama3"
+    try:
+        tags_data = ping.json()
+        installed_models = [m["name"] for m in tags_data.get("models", [])]
+        # Check exact match or prefix match (e.g. "llama3" matches "llama3:latest")
+        model_found = any(
+            m == model_name or m.startswith(model_name + ":") or model_name.startswith(m.split(":")[0])
+            for m in installed_models
+        )
+        if not model_found and installed_models:
+            # Use first available model and warn
+            model_name = installed_models[0]
+            on_token(f"[Model '{model}' not found. Using '{model_name}' instead]\n\n")
+        elif not model_found and not installed_models:
+            on_error(
+                f"No models installed in Ollama.\n"
+                f"Run: ollama pull llama3\n"
+                f"Then try again."
+            )
+            return
+    except Exception:
+        pass  # If tags parsing fails, proceed anyway with model as-is
+
+    # Step 3: Build messages
     messages = [{"role": "system", "content": system_prompt}]
     messages += _build_messages(user_prompt, extra_messages)
-    resp = requests.post(url, json={"model": model or "llama3.2:3b", "messages": messages, "stream": True}, stream=True)
+
+    # Step 4: Stream with proper timeout and error handling
     full = ""
-    for line in resp.iter_lines():
-        if line:
-            data = json.loads(line)
-            t = data.get("message", {}).get("content", "")
-            full += t
-            if t:
-                on_token(t)
-            if data.get("done"):
+    try:
+        resp = requests.post(
+            url,
+            json={
+                "model": model_name,
+                "messages": messages,
+                "stream": True,
+                "options": {
+                    "temperature": settings.ai.temperature,
+                    "num_predict": settings.ai.max_tokens,
+                }
+            },
+            stream=True,
+            timeout=(5, 120),  # (connect timeout, read timeout)
+        )
+        resp.raise_for_status()
+
+        for line in resp.iter_lines(chunk_size=None):
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Check for Ollama error response
+            if "error" in data:
+                on_error(f"Ollama error: {data['error']}")
+                return
+
+            token = data.get("message", {}).get("content", "")
+            if token:
+                full += token
+                on_token(token)
+
+            if data.get("done", False):
                 break
-    on_done(full, 0)
+
+        if not full:
+            on_error(
+                "Ollama returned an empty response.\n"
+                f"Check that model '{model_name}' is working:\n"
+                f"Run: ollama run {model_name}"
+            )
+            return
+
+        on_done(full, 0)
+
+    except requests.exceptions.Timeout:
+        if full:
+            # Partial response — still deliver it
+            on_done(full, 0)
+        else:
+            on_error("Ollama request timed out. The model may be too slow or not responding.")
+    except requests.exceptions.ConnectionError:
+        on_error("Lost connection to Ollama mid-stream. Is it still running?")
+    except Exception as e:
+        if full:
+            on_done(full, 0)
+        else:
+            on_error(f"Ollama streaming error: {str(e)}")
