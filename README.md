@@ -1,4 +1,4 @@
-# ✦ Clarify — AI Text Explainer for Ubuntu
+# ✦ Clarify — AI Text Explainer for Linux-only
 
 > Select any text, anywhere. Get an instant AI explanation.
 
